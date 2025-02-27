@@ -1,7 +1,9 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -12,15 +14,15 @@ type DailySchedule struct {
 }
 
 // NextRun returns the next run time after the provided time.
-func (daily DailySchedule) NextRun(afterTime time.Time) time.Time {
+func (daily DailySchedule) NextRun(after time.Time) *time.Time {
 	nextRunTime := time.Date(
-		afterTime.Year(), afterTime.Month(), afterTime.Day(),
-		daily.Hour, daily.Minute, 0, 0, afterTime.Location(),
+		after.Year(), after.Month(), after.Day(),
+		daily.Hour, daily.Minute, 0, 0, after.Location(),
 	)
-	if nextRunTime.Before(afterTime) {
-		nextRunTime = nextRunTime.Add(24 * time.Hour)
+	if nextRunTime.Before(after) {
+		nextRunTime = nextRunTime.AddDate(0, 0, 1)
 	}
-	return nextRunTime
+	return &nextRunTime
 }
 
 // Description returns a description of the daily schedule.
@@ -36,18 +38,18 @@ type WeekdaySchedule struct {
 }
 
 // NextRun returns the next run time after the provided time.
-func (weekday WeekdaySchedule) NextRun(afterTime time.Time) time.Time {
+func (weekday WeekdaySchedule) NextRun(after time.Time) *time.Time {
 	nextRunTime := time.Date(
-		afterTime.Year(), afterTime.Month(), afterTime.Day(),
-		weekday.Hour, weekday.Minute, 0, 0, afterTime.Location(),
+		after.Year(), after.Month(), after.Day(),
+		weekday.Hour, weekday.Minute, 0, 0, after.Location(),
 	)
-	if nextRunTime.Before(afterTime) {
-		nextRunTime = nextRunTime.Add(24 * time.Hour)
+	if nextRunTime.Before(after) {
+		nextRunTime = nextRunTime.AddDate(0, 0, 1)
 	}
 	for !containsWeekday(weekday.Weekdays, nextRunTime.Weekday()) {
-		nextRunTime = nextRunTime.Add(24 * time.Hour)
+		nextRunTime = nextRunTime.AddDate(0, 0, 1)
 	}
-	return nextRunTime
+	return &nextRunTime
 }
 
 // Description returns a description of the weekday schedule.
@@ -62,17 +64,18 @@ type IntervalSchedule struct {
 }
 
 // NextRun returns the next run time after the provided time.
-func (interval IntervalSchedule) NextRun(afterTime time.Time) time.Time {
+func (interval IntervalSchedule) NextRun(after time.Time) *time.Time {
 	startRunTime := interval.StartTime
 	if startRunTime.IsZero() {
-		startRunTime = afterTime
+		startRunTime = after
 	}
-	if startRunTime.After(afterTime) {
-		return startRunTime
+	if startRunTime.After(after) {
+		return &startRunTime
 	}
-	elapsedTime := afterTime.Sub(startRunTime)
+	elapsedTime := after.Sub(startRunTime)
 	numberOfIntervals := elapsedTime / interval.Interval
-	return startRunTime.Add(interval.Interval * (numberOfIntervals + 1))
+	nextRunTime := startRunTime.Add(interval.Interval * (numberOfIntervals + 1))
+	return &nextRunTime
 }
 
 // Description returns a description of the interval schedule.
@@ -88,4 +91,65 @@ func containsWeekday(weekdays []time.Weekday, targetWeekday time.Weekday) bool {
 		}
 	}
 	return false
+}
+
+// OneTimeSchedule implements a schedule that runs once and then never again
+type OneTimeSchedule struct {
+	runTime          time.Time
+	hasExecuted      atomic.Bool
+	executionChannel chan struct{}
+}
+
+// NewOneTimeSchedule creates a new schedule that runs once at the specified time
+func NewOneTimeSchedule(executeAt time.Time) *OneTimeSchedule {
+	return &OneTimeSchedule{
+		runTime:          executeAt,
+		executionChannel: make(chan struct{}, 1),
+	}
+}
+
+// NextRun returns the next execution time or nil if already executed
+func (schedule *OneTimeSchedule) NextRun(afterTime time.Time) *time.Time {
+	// First check if already executed
+	if schedule.hasExecuted.Load() {
+		return nil // Return nil to indicate no more runs
+	}
+
+	// If we're past the scheduled time but haven't executed yet
+	if afterTime.After(schedule.runTime) {
+		// Mark as executed atomically
+		schedule.hasExecuted.CompareAndSwap(false, true)
+
+		// Return current time to run now
+		now := afterTime.Add(time.Millisecond)
+		return &now
+	}
+
+	// Return the scheduled time
+	result := schedule.runTime
+	return &result
+}
+
+// Description returns a human-readable description of the schedule
+func (schedule *OneTimeSchedule) Description() string {
+	return "One-time execution at " + schedule.runTime.Format("15:04:05")
+}
+
+// WaitForExecution waits for the execution to complete
+func (schedule *OneTimeSchedule) WaitForExecution(ctx context.Context) bool {
+	select {
+	case <-schedule.executionChannel:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// SignalExecution signals that the task has completed execution
+func (schedule *OneTimeSchedule) SignalExecution() {
+	// Non-blocking send to prevent hanging if WaitForExecution isn't called
+	select {
+	case schedule.executionChannel <- struct{}{}:
+	default:
+	}
 }

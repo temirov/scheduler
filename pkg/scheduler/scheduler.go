@@ -10,7 +10,10 @@ import (
 
 // TimeSchedule defines the interface for scheduling tasks.
 type TimeSchedule interface {
-	NextRun(afterTime time.Time) time.Time
+	// NextRun returns a pointer to the next execution time:
+	// - nil means "never run again"
+	// - A valid time indicates when to run next
+	NextRun(afterTime time.Time) *time.Time
 	Description() string
 }
 
@@ -98,23 +101,32 @@ func (schedulerInstance *Scheduler) Stop() {
 	slog.Info("Scheduler stopped")
 }
 
-// executeTask runs a single task according to its schedule.
+// executeTask runs the task according to its schedule
 func (schedulerInstance *Scheduler) executeTask(taskInstance Task) {
 	defer schedulerInstance.waitGroup.Done()
 
-	currentTime := time.Now()
-	nextRunTime := taskInstance.Schedule().NextRun(currentTime)
-	slog.Info("Task scheduled", "task_id", taskInstance.ID(), "next_run", nextRunTime)
-
 	for {
-		currentTime = time.Now()
-		nextRunTime = taskInstance.Schedule().NextRun(currentTime)
-		timer := time.NewTimer(nextRunTime.Sub(currentTime))
+		currentTime := time.Now()
+		nextRunTimePtr := taskInstance.Schedule().NextRun(currentTime)
+
+		// If nil returned, the task should never run again
+		if nextRunTimePtr == nil {
+			slog.Info("Task will not run again", "task_id", taskInstance.ID())
+			return
+		}
+
+		nextRunTime := *nextRunTimePtr
+		waitDuration := nextRunTime.Sub(currentTime)
+
+		// Use a timer to wait until next execution
+		timer := time.NewTimer(waitDuration)
 
 		select {
 		case <-timer.C:
+			// Time to execute the task
+			ctx := context.Background()
 			slog.Info("Executing task", "task_id", taskInstance.ID())
-			contextBefore, cancelBefore := context.WithTimeout(context.Background(), 30*time.Minute)
+			contextBefore, cancelBefore := context.WithTimeout(ctx, 30*time.Minute)
 			executionBeforeError := taskInstance.BeforeExecute(contextBefore)
 			cancelBefore()
 
@@ -129,7 +141,7 @@ func (schedulerInstance *Scheduler) executeTask(taskInstance Task) {
 						slog.Info("Retrying task after failure", "task_id", taskInstance.ID(), "attempt", retryAttempt, "max_retries", maximumRetries)
 					}
 
-					contextRun, cancelRun := context.WithTimeout(context.Background(), 30*time.Minute)
+					contextRun, cancelRun := context.WithTimeout(ctx, 30*time.Minute)
 					executionRunError := taskInstance.Run(contextRun)
 					cancelRun()
 
@@ -157,7 +169,13 @@ func (schedulerInstance *Scheduler) executeTask(taskInstance Task) {
 				}
 			}
 
+			// After executing a task with a OneTimeSchedule
+			if oneTimeSchedule, isOneTime := taskInstance.Schedule().(*OneTimeSchedule); isOneTime {
+				oneTimeSchedule.SignalExecution()
+			}
+
 		case <-schedulerInstance.stopChannel:
+			// Scheduler is stopping
 			timer.Stop()
 			slog.Info("Task stopped", "task_id", taskInstance.ID())
 			return

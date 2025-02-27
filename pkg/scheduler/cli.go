@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/temirov/scheduler/pkg/utils"
 )
 
 // Execute processes CLI flags and executes the requested command.
@@ -58,8 +60,8 @@ func listTasks() {
 			invalidTaskIDs = append(invalidTaskIDs, taskInfo.ID)
 			continue
 		}
-		nextRun := taskInfo.Schedule.NextRun(currentTime)
-		if nextRun.IsZero() || !nextRun.After(currentTime) {
+		nextRunPtr := taskInfo.Schedule.NextRun(currentTime)
+		if nextRunPtr == nil || !nextRunPtr.After(currentTime) {
 			invalidTaskIDs = append(invalidTaskIDs, taskInfo.ID)
 			continue
 		}
@@ -98,9 +100,9 @@ func listTasks() {
 	for _, taskInfo := range validTaskInfos {
 		taskID := taskInfo.ID
 		scheduleDesc := taskInfo.Schedule.Description()
-		nextRun := taskInfo.Schedule.NextRun(currentTime)
-		nextRunDesc := formatNextRunTime(nextRun)
-		scheduleLines := wordWrap(scheduleDesc, scheduleWidth)
+		nextRunPtr := taskInfo.Schedule.NextRun(currentTime)
+		nextRunDesc := formatNextRunTime(nextRunPtr)
+		scheduleLines := utils.WordWrap(scheduleDesc, scheduleWidth)
 		fmt.Printf("%-*s %-*s %-*s\n", taskIDWidth, taskID, scheduleWidth, scheduleLines[0], nextRunWidth, nextRunDesc)
 		for subIndex := 1; subIndex < len(scheduleLines); subIndex++ {
 			fmt.Printf("%-*s %-*s %-*s\n", taskIDWidth, "", scheduleWidth, scheduleLines[subIndex], nextRunWidth, "")
@@ -110,9 +112,9 @@ func listTasks() {
 }
 
 func runTaskFromRegistry(taskID string) {
-	taskInfo, exists := GetTaskInfo(taskID)
-	if !exists {
-		fmt.Printf("Error: Task '%s' is not registered.\n", taskID)
+	taskInfo, err := GetTaskInfo(taskID)
+	if err != nil {
+		fmt.Printf("Error: Task '%s' is not registered: %v\n", taskID, err)
 		fmt.Println("Run with --list to see available tasks.")
 		os.Exit(1)
 	}
@@ -157,8 +159,8 @@ func startScheduler() {
 			invalidTaskIDs = append(invalidTaskIDs, taskInfo.ID)
 			continue
 		}
-		nextRun := taskInfo.Schedule.NextRun(currentTime)
-		if nextRun.IsZero() || !nextRun.After(currentTime) {
+		nextRunPtr := taskInfo.Schedule.NextRun(currentTime)
+		if nextRunPtr == nil || !nextRunPtr.After(currentTime) {
 			invalidTaskIDs = append(invalidTaskIDs, taskInfo.ID)
 			continue
 		}
@@ -212,9 +214,13 @@ func startScheduler() {
 	fmt.Printf("Starting scheduler with %d tasks...\n", len(registeredTaskIDs))
 	fmt.Println("Registered tasks:")
 	for _, taskID := range registeredTaskIDs {
-		taskInfo, _ := GetTaskInfo(taskID)
-		nextRun := taskInfo.Schedule.NextRun(currentTime)
-		fmt.Printf("  - %s (next run: %s)\n", taskID, formatNextRunTime(nextRun))
+		taskInfo, err := GetTaskInfo(taskID)
+		if err != nil {
+			fmt.Printf("Warning: Could not get info for task '%s': %v\n", taskID, err)
+			continue
+		}
+		nextRunPtr := taskInfo.Schedule.NextRun(currentTime)
+		fmt.Printf("  - %s (next run: %s)\n", taskID, formatNextRunTime(nextRunPtr))
 	}
 	schedulerInstance.Start()
 	sigChan := make(chan os.Signal, 1)
@@ -227,90 +233,28 @@ func startScheduler() {
 }
 
 func createTaskFromInfo(taskInfo TaskInfo) (Task, error) {
-	switch taskInfo.ID {
-	//case "stock_data_collector":
-	//	return NewStockDataCollectorTask(), nil
-	default:
+	factory, exists := GetTaskFactory(taskInfo.ID)
+	if !exists {
 		return nil, fmt.Errorf("no factory registered for task: %s", taskInfo.ID)
 	}
+
+	return factory(taskInfo)
 }
 
-func formatNextRunTime(nextRun time.Time) string {
-	if nextRun.IsZero() {
+func formatNextRunTime(nextRunPtr *time.Time) string {
+	if nextRunPtr == nil {
 		return "Unknown"
 	}
+	nextRun := *nextRunPtr
 	currentTime := time.Now()
-	if isSameDay(nextRun, currentTime) {
+	if utils.IsSameDay(nextRun, currentTime) {
 		return fmt.Sprintf("Today at %02d:%02d", nextRun.Hour(), nextRun.Minute())
 	}
 	tomorrow := currentTime.Add(24 * time.Hour)
-	if isSameDay(nextRun, tomorrow) {
+	if utils.IsSameDay(nextRun, tomorrow) {
 		return fmt.Sprintf("Tomorrow at %02d:%02d", nextRun.Hour(), nextRun.Minute())
 	}
 	return nextRun.Format("Mon, Jan 2 at 15:04")
-}
-
-func isSameDay(timeOne, timeTwo time.Time) bool {
-	return timeOne.Year() == timeTwo.Year() && timeOne.Month() == timeTwo.Month() && timeOne.Day() == timeTwo.Day()
-}
-
-func wordWrap(text string, lineWidth int) []string {
-	if len(text) <= lineWidth {
-		return []string{text}
-	}
-	var wrapped []string
-	var currentLine string
-	words := splitWords(text)
-	for _, word := range words {
-		if len(currentLine)+len(word)+1 <= lineWidth {
-			if currentLine != "" {
-				currentLine += " "
-			}
-			currentLine += word
-		} else {
-			if currentLine != "" {
-				wrapped = append(wrapped, currentLine)
-			}
-			if len(word) > lineWidth {
-				for len(word) > 0 {
-					if len(word) <= lineWidth {
-						currentLine = word
-						word = ""
-					} else {
-						currentLine = word[:lineWidth]
-						word = word[lineWidth:]
-					}
-					wrapped = append(wrapped, currentLine)
-					currentLine = ""
-				}
-			} else {
-				currentLine = word
-			}
-		}
-	}
-	if currentLine != "" {
-		wrapped = append(wrapped, currentLine)
-	}
-	return wrapped
-}
-
-func splitWords(text string) []string {
-	var words []string
-	var currentWord string
-	for _, character := range text {
-		if character == ' ' || character == '\t' || character == '\n' {
-			if currentWord != "" {
-				words = append(words, currentWord)
-				currentWord = ""
-			}
-		} else {
-			currentWord += string(character)
-		}
-	}
-	if currentWord != "" {
-		words = append(words, currentWord)
-	}
-	return words
 }
 
 func showHelp() {
@@ -329,8 +273,8 @@ func showHelp() {
 		if taskInfo.Schedule == nil {
 			scheduleStatus = "No schedule defined"
 		} else {
-			nextRun := taskInfo.Schedule.NextRun(currentTime)
-			if nextRun.IsZero() || !nextRun.After(currentTime) {
+			nextRunPtr := taskInfo.Schedule.NextRun(currentTime)
+			if nextRunPtr == nil || !nextRunPtr.After(currentTime) {
 				scheduleStatus = "Invalid schedule (no future run time)"
 			}
 		}

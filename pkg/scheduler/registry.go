@@ -17,24 +17,34 @@ var (
 )
 
 // RegisterTaskInfo registers metadata about a task in the registry.
-func RegisterTaskInfo(taskID, description string, schedule TimeSchedule) {
+// Returns ErrTaskAlreadyExists if a task with the same ID already exists.
+func RegisterTaskInfo(taskID, description string, schedule TimeSchedule) error {
 	registryLock.Lock()
 	defer registryLock.Unlock()
+
+	if _, exists := taskRegistry[taskID]; exists {
+		return ErrTaskAlreadyExists
+	}
 
 	taskRegistry[taskID] = TaskInfo{
 		ID:          taskID,
 		Description: description,
 		Schedule:    schedule,
 	}
+
+	return nil
 }
 
-// GetTaskInfo returns information about a registered task.
-func GetTaskInfo(taskID string) (TaskInfo, bool) {
+// GetTaskInfo returns information about a registered task or an error if not found.
+func GetTaskInfo(taskID string) (TaskInfo, error) {
 	registryLock.RLock()
 	defer registryLock.RUnlock()
 
 	taskInformation, exists := taskRegistry[taskID]
-	return taskInformation, exists
+	if !exists {
+		return TaskInfo{}, ErrTaskNotFound
+	}
+	return taskInformation, nil
 }
 
 // GetAllTaskInfo returns information about all registered tasks.
@@ -59,4 +69,12 @@ func GetRegisteredTaskIDs() []string {
 		taskIDs = append(taskIDs, taskID)
 	}
 	return taskIDs
+}
+
+// ClearRegistryForTesting resets the task registry (only for testing purposes)
+func ClearRegistryForTesting() {
+	registryLock.Lock()
+	defer registryLock.Unlock()
+
+	taskRegistry = make(map[string]TaskInfo)
 }
