@@ -1,0 +1,9 @@
+.idea/
+.vscode/
+bin/
+*.db
+*.log
+*.txt
+*.iml
+.env
+qodana.yaml
