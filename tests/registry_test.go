@@ -119,3 +119,56 @@ func TestGetTaskInfo_ErrorHandling(t *testing.T) {
 		t.Errorf("Expected ErrTaskNotFound for non-existent task, got: %v", err)
 	}
 }
+
+func TestRegisterTask(t *testing.T) {
+	// Clear the registry before testing
+	clearRegistry()
+
+	// Define test variables
+	taskID := "combined-registration-task"
+	description := "Task registered with combined function"
+	schedule := scheduler.DailySchedule{Hour: 10, Minute: 15}
+
+	// Create a test task using the existing TestTask implementation
+	testTask := NewTestTask(taskID, schedule)
+
+	// Register using the new combined function
+	err := scheduler.RegisterTask(taskID, description, schedule, func() scheduler.Task {
+		return testTask
+	})
+	if err != nil {
+		t.Errorf("Task registration with combined function failed: %v", err)
+	}
+
+	// Verify task info was registered correctly
+	taskInfo, err := scheduler.GetTaskInfo(taskID)
+	if err != nil {
+		t.Errorf("Failed to get task info after combined registration: %v", err)
+	}
+	if taskInfo.ID != taskID || taskInfo.Description != description {
+		t.Errorf("Task info mismatch after combined registration. Got %+v", taskInfo)
+	}
+
+	// Verify factory was registered correctly
+	factory, exists := scheduler.GetTaskFactory(taskID)
+	if !exists {
+		t.Errorf("Task factory not found after combined registration")
+	}
+
+	// Verify factory creates the correct task
+	createdTask, err := factory(taskInfo)
+	if err != nil {
+		t.Errorf("Error creating task from factory: %v", err)
+	}
+	if createdTask.ID() != taskID {
+		t.Errorf("Created task has wrong ID. Expected %s, got %s", taskID, createdTask.ID())
+	}
+
+	// Attempting to register same ID again should fail
+	err = scheduler.RegisterTask(taskID, "Different description", schedule, func() scheduler.Task {
+		return testTask
+	})
+	if err != scheduler.ErrTaskAlreadyExists {
+		t.Errorf("Expected ErrTaskAlreadyExists but got: %v", err)
+	}
+}

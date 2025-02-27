@@ -38,15 +38,47 @@ import (
 func main() {
     // Define a daily schedule
     dailySchedule := scheduler.DailySchedule{Hour: 9, Minute: 0}
-    // Create a new task
-    myTask := NewMyTask("my-task-id", dailySchedule)
-    // Register the task
-    err := scheduler.RegisterTaskInfo("my-task-id", "My daily task", dailySchedule)
+    
+    // Register the task with a single call
+    err := scheduler.RegisterTask(
+        "my-task-id",
+        "My daily task", 
+        dailySchedule,
+        func() scheduler.Task {
+            return NewMyTask()
+        },
+    )
     if err != nil {
         panic(err)
     }
 }
 ```
+
+Using init() function for registration:
+
+```go
+func init() {
+    // Define a daily schedule
+    dailySchedule := scheduler.DailySchedule{Hour: 9, Minute: 0}
+    
+    // Register task with a single call
+    scheduler.RegisterTask(
+        "my-task-id",
+        "My daily task", 
+        dailySchedule,
+        func() scheduler.Task {
+            return NewMyTask()
+        },
+    )
+}
+
+// NewMyTask creates an instance of your task
+func NewMyTask() scheduler.Task {
+    return &MyTask{}
+}
+```
+
+> **Note:** For backward compatibility, the separate `RegisterTaskInfo` and `RegisterTaskFactory` functions are still available, but using the combined `RegisterTask` function is recommended.
 
 ### Running Tasks
 
@@ -72,21 +104,66 @@ Here's a complete example of registering and running a task:
 ```go
 package main
 import (
+    "context"
     "github.com/temirov/scheduler/pkg/scheduler"
     "time"
 )
+
+// Example task implementation
+type ExampleTask struct{}
+
+func (t *ExampleTask) ID() string {
+    return "one-time-task"
+}
+
+func (t *ExampleTask) Schedule() scheduler.TimeSchedule {
+    return scheduler.NewOneTimeSchedule(time.Now().Add(1 * time.Hour))
+}
+
+func (t *ExampleTask) MaxRetries() int {
+    return 3
+}
+
+func (t *ExampleTask) RetryDelay(attempt int) time.Duration {
+    return time.Second * time.Duration(attempt*5)
+}
+
+func (t *ExampleTask) BeforeExecute(ctx context.Context) error {
+    return nil
+}
+
+func (t *ExampleTask) Run(ctx context.Context) error {
+    // Task implementation
+    return nil
+}
+
+func NewExampleTask() scheduler.Task {
+    return &ExampleTask{}
+}
+
 func main() {
     // Define a one-time schedule
-    oneTimeSchedule := scheduler.NewOneTimeSchedule(time.Now().Add(1 time.Hour))
-    // Create and register a task
+    oneTimeSchedule := scheduler.NewOneTimeSchedule(time.Now().Add(1 * time.Hour))
+    
     taskID := "one-time-task"
-    err := scheduler.RegisterTaskInfo(taskID, "A one-time task", oneTimeSchedule)
+    
+    // Register task with a single call
+    err := scheduler.RegisterTask(
+        taskID,
+        "A one-time task",
+        oneTimeSchedule,
+        func() scheduler.Task {
+            return NewExampleTask()
+        },
+    )
     if err != nil {
         panic(err)
     }
+    
     // Start the scheduler
     schedulerInstance := scheduler.NewScheduler()
     schedulerInstance.Start()
+    
     // Run the task immediately
     err = schedulerInstance.RunTaskNow(taskID)
     if err != nil {

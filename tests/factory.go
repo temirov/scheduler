@@ -6,18 +6,13 @@ import (
 
 // RegisterTestTaskFactory registers a factory for the test task
 func RegisterTestTaskFactory(taskID string, testTask *TestTask) error {
-	// Register task info
-	err := scheduler.RegisterTaskInfo(
+	// Register the task using the new simplified API
+	return scheduler.RegisterTask(
 		taskID,
 		"Test task for CLI integration testing",
 		testTask.Schedule(),
+		func() scheduler.Task {
+			return testTask
+		},
 	)
-	if err != nil {
-		return err
-	}
-
-	// Register factory for the task
-	return scheduler.RegisterTaskFactory(taskID, func(taskInfo scheduler.TaskInfo) (scheduler.Task, error) {
-		return testTask, nil
-	})
-} 
+}
